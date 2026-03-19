@@ -1,0 +1,6 @@
+venv/ 
+__pycache__/ 
+data/students/ 
+data/encodings.pkl 
+data/attendance.db 
+*.pyc 
