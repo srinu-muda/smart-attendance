@@ -32,6 +32,29 @@ class Student(db.Model):
         }
 
 
+from flask_login import UserMixin
+
+class Faculty(db.Model, UserMixin):
+    """Faculty login account."""
+    __tablename__ = "faculty"
+
+    id           = db.Column(db.Integer, primary_key=True)
+    username     = db.Column(db.String(50), unique=True,
+                              nullable=False)
+    full_name    = db.Column(db.String(100), nullable=False)
+    password     = db.Column(db.String(200), nullable=False)
+    department   = db.Column(db.String(50), default="CSE")
+    created_at   = db.Column(db.DateTime,
+                              default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id"        : self.id,
+            "username"  : self.username,
+            "full_name" : self.full_name,
+            "department": self.department
+        }
+    
 class Session(db.Model):
     """A single class/lecture session."""
     __tablename__ = "sessions"

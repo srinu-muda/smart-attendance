@@ -13,6 +13,24 @@ from app.attendance import (sync_students, start_session,
                              get_session_report,
                              get_active_session)
 from app.report import generate_excel, generate_csv
+# Add these imports at top of routes.py
+from flask import session as flask_session, render_template
+from functools import wraps
+from app.models import Faculty
+from flask_bcrypt import Bcrypt
+
+bcrypt = Bcrypt()
+
+def login_required_custom(f):
+    """Simple login check decorator."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not flask_session.get("faculty_id"):
+            from flask import redirect
+            return redirect("/login")
+        return f(*args, **kwargs)
+    return decorated
+
 
 # ── Blueprint for all routes ──────────────────────────────────────
 api = Blueprint("api", __name__)
@@ -220,3 +238,50 @@ def health():
         "total_students"  : students,
         "total_sessions"  : sessions,
     })
+
+# Add these routes at bottom of routes.py
+@api.route("/login", methods=["GET"])
+def login_page():
+    if flask_session.get("faculty_id"):
+        from flask import redirect
+        return redirect("/")
+    return render_template("login.html", error=None)
+
+
+@api.route("/login", methods=["POST"])
+def login_post():
+    from flask import request, redirect
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "").strip()
+
+    # Default admin account check
+    if username == "admin" and password == "admin123":
+        flask_session["faculty_id"]   = 0
+        flask_session["faculty_name"] = "Admin"
+        return redirect("/")
+
+    # DB faculty check
+    faculty = Faculty.query.filter_by(username=username).first()
+    if faculty and bcrypt.check_password_hash(
+            faculty.password, password):
+        flask_session["faculty_id"]   = faculty.id
+        flask_session["faculty_name"] = faculty.full_name
+        return redirect("/")
+
+    return render_template("login.html",
+                            error="Invalid username or password")
+
+
+@api.route("/logout")
+def logout():
+    from flask import redirect
+    flask_session.clear()
+    return redirect("/login")
+
+
+@api.route("/api/current-faculty", methods=["GET"])
+def current_faculty():
+    return {
+        "faculty_id"  : flask_session.get("faculty_id"),
+        "faculty_name": flask_session.get("faculty_name", "Guest")
+    }
