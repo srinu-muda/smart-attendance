@@ -251,25 +251,28 @@ if __name__ == "__main__":
 
     # ── Check active session ──────────────────────────────────────
     if session_res.get("status") == "none":
-        print("\n[WARN] No active session found.")
-        print("Start one? (y/n): ", end="")
-        if input().strip().lower() == "y":
-            code = input("Subject code (e.g. CS501): ").strip()
-            name = input("Subject name             : ").strip()
-            try:
-                res = requests.post(
-                    f"{API_BASE}/api/session/start",
-                    json={"subject_code": code,
-                          "subject_name": name},
-                    timeout=2
-                )
-                session_res = res.json()
-                print(f"[✓] Session started: {code}")
-            except:
-                print("[ERROR] Could not start session.")
-                exit()
-        else:
-            print("[INFO] Exiting — start a session first.")
+     print("\n" + "="*55)
+     print("  No active session found!")
+     print("  Please start a session from the dashboard first:")
+     print("  http://localhost:5000")
+     print("="*55)
+     print("\nWaiting for session to be started from dashboard...")
+     print("Press Ctrl+C to cancel\n")
+
+    # Wait until a session is started from dashboard
+     import time
+     while True:
+        try:
+            res          = requests.get(
+                f"{API_BASE}/api/session/active", timeout=2)
+            session_res  = res.json()
+            if session_res.get("status") == "ok":
+                print("[✓] Session detected from dashboard!")
+                break
+            print("  Still waiting... (open dashboard and start session)")
+            time.sleep(3)
+        except KeyboardInterrupt:
+            print("\n[INFO] Cancelled.")
             exit()
 
     session_info = session_res.get("session", {})
