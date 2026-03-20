@@ -1,248 +1,391 @@
-# ai/encoder.py
-# Module 3: Face Enrollment
-# Captures face photos for a student and saves their face embedding (fingerprint)
-# Uses OpenCV + ONNX (no dlib/tensorflow needed — works on Python 3.14)
+# ai/encoder.py — UPGRADED with InsightFace ArcFace + FAISS
+# Uses buffalo_sc model — optimized for CPU, 97% accuracy
+# Generates 512-d ArcFace embeddings stored in FAISS index
 
 import cv2
 import os
+import sys
 import pickle
 import numpy as np
+import faiss
+
+# ── Fix module path so it works both ways ─────────────────────────
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# ── InsightFace setup ─────────────────────────────────────────────
+import insightface
+from insightface.app import FaceAnalysis
 
 # ── Paths ─────────────────────────────────────────────────────────
-STUDENTS_DIR   = "data/students"      # Folder to save face images
-ENCODINGS_FILE = "data/encodings.pkl" # Saved face embeddings
-PHOTOS_NEEDED  = 10                   # Photos captured per student
+STUDENTS_DIR   = "data/students"
+ENCODINGS_FILE = "data/encodings.pkl"   # student_id → name mapping
+FAISS_INDEX    = "data/faiss.index"     # FAISS vector index
+LABELS_FILE    = "data/labels.pkl"      # index position → student_id
+PHOTOS_NEEDED  = 15                     # photos per student
 
-# ── Load Haar Cascade for face detection during capture ───────────
-FACE_CASCADE = cv2.CascadeClassifier(
-    cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-)
+# ── Global face app (loaded once, reused) ─────────────────────────
+_app = None
 
-
-def get_face_embedding(face_img):
+def get_face_app():
     """
-    Generate a simple but effective face embedding using
-    histogram of pixel values + resize normalization.
+    Load InsightFace buffalo_sc model once and reuse.
+    buffalo_sc = small + fast, optimized for CPU.
+    First call downloads ~100 MB model automatically.
+    """
+    global _app
+    if _app is None:
+        print("[INFO] Loading InsightFace buffalo_sc model...")
+        print("[INFO] First run may download model — please wait...")
+        _app = FaceAnalysis(
+            name="buffalo_sc",          # Small + fast for CPU
+            providers=["CPUExecutionProvider"]
+        )
+        _app.prepare(ctx_id=0, det_size=(320, 320))  # Smaller = faster
+        print("[INFO] Model loaded successfully!")
+    return _app
 
-    This is our lightweight embedding that works without
-    dlib/tensorflow on Python 3.14.
+
+def get_embedding(img_bgr):
+    """
+    Get 512-d ArcFace embedding for a face image.
 
     Args:
-        face_img : cropped face image (any size, BGR)
+        img_bgr : BGR image (full frame or face crop)
 
     Returns:
-        numpy array of shape (1024,) — the face fingerprint
+        numpy array (512,) normalized embedding
+        or None if no face detected
     """
-    # Step 1: Resize to fixed 64x64
-    face = cv2.resize(face_img, (64, 64))
+    app   = get_face_app()
+    faces = app.get(img_bgr)
 
-    # Step 2: Convert to grayscale
-    gray = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY)
+    if not faces:
+        return None
 
-    # Step 3: Apply histogram equalization (normalize lighting)
-    gray = cv2.equalizeHist(gray)
+    # Use the largest detected face
+    face      = max(faces, key=lambda f: (f.bbox[2]-f.bbox[0]) *
+                                         (f.bbox[3]-f.bbox[1]))
+    embedding = face.embedding
 
-    # Step 4: Flatten pixel values and normalize to 0-1
-    pixels = gray.flatten().astype(np.float32) / 255.0
+    if embedding is None:
+        return None
 
-    # Step 5: Compute Local Binary Pattern (LBP) histogram
-    # LBP captures texture patterns — works well for faces
-    lbp = compute_lbp(gray)
-
-    # Step 6: Combine pixel features + LBP histogram
-    embedding = np.concatenate([pixels, lbp])
-
-    return embedding
+    # L2 normalize so cosine similarity = dot product
+    embedding = embedding / np.linalg.norm(embedding)
+    return embedding.astype(np.float32)
 
 
-def compute_lbp(gray_img):
+def build_faiss_index():
     """
-    Compute a simplified Local Binary Pattern histogram.
-    LBP is great for face texture — robust to lighting changes.
+    Build FAISS index from all stored student photos.
+    Called automatically after every enrollment/update/delete.
 
-    Args:
-        gray_img : 64x64 grayscale image
-
-    Returns:
-        numpy array of shape (256,) — LBP histogram
+    FAISS IndexFlatIP = exact inner product search
+    = cosine similarity on L2-normalized vectors
+    Same person    → score ~0.85–0.99
+    Diff person    → score ~0.10–0.40
     """
-    h, w   = gray_img.shape
-    lbp    = np.zeros((h, w), dtype=np.uint8)
+    db = load_db()
+    if not db:
+        print("[WARN] No students enrolled — skipping index build.")
+        return
 
-    # Compare each pixel with its 8 neighbors
-    for i in range(1, h - 1):
-        for j in range(1, w - 1):
-            center = gray_img[i, j]
-            code   = 0
-            code |= (gray_img[i-1, j-1] >= center) << 7
-            code |= (gray_img[i-1, j  ] >= center) << 6
-            code |= (gray_img[i-1, j+1] >= center) << 5
-            code |= (gray_img[i,   j+1] >= center) << 4
-            code |= (gray_img[i+1, j+1] >= center) << 3
-            code |= (gray_img[i+1, j  ] >= center) << 2
-            code |= (gray_img[i+1, j-1] >= center) << 1
-            code |= (gray_img[i,   j-1] >= center) << 0
-            lbp[i, j] = code
+    print("\n[FAISS] Building search index...")
 
-    # Return normalized histogram (256 bins)
-    hist, _ = np.histogram(lbp.ravel(), bins=256, range=(0, 256))
-    hist    = hist.astype(np.float32)
-    hist   /= (hist.sum() + 1e-6)   # Normalize
-    return hist
+    all_embeddings = []   # Will become shape (N, 512)
+    all_labels     = []   # student_id for each embedding row
+
+    app = get_face_app()
+
+    for student_id, info in db.items():
+        student_dir = os.path.join(STUDENTS_DIR, student_id)
+        if not os.path.exists(student_dir):
+            continue
+
+        photo_files = [f for f in os.listdir(student_dir)
+                       if f.lower().endswith('.jpg')]
+        count = 0
+
+        for photo_file in photo_files:
+            path = os.path.join(student_dir, photo_file)
+            img  = cv2.imread(path)
+            if img is None:
+                continue
+
+            # Get embedding directly from full frame
+            faces = app.get(img)
+            if not faces:
+                continue
+
+            face = max(faces, key=lambda f: (f.bbox[2]-f.bbox[0]) *
+                                             (f.bbox[3]-f.bbox[1]))
+            emb = face.embedding
+            if emb is None:
+                continue
+
+            emb = emb / np.linalg.norm(emb)
+            all_embeddings.append(emb.astype(np.float32))
+            all_labels.append(student_id)
+            count += 1
+
+        print(f"  [✓] {info['name']:20s} → {count} embeddings indexed")
+
+    if not all_embeddings:
+        print("[ERROR] No valid embeddings found. "
+              "Make sure photos contain clear faces.")
+        return
+
+    # Stack into matrix and build FAISS index
+    matrix = np.stack(all_embeddings).astype(np.float32)
+    index  = faiss.IndexFlatIP(512)   # Inner Product on L2-norm = cosine
+    index.add(matrix)
+
+    # Save index and labels to disk
+    faiss.write_index(index, FAISS_INDEX)
+    with open(LABELS_FILE, 'wb') as f:
+        pickle.dump(all_labels, f)
+
+    print(f"\n[✓] FAISS index built successfully!")
+    print(f"    Vectors : {index.ntotal}")
+    print(f"    Students: {len(db)}")
+    print(f"    Saved to: {FAISS_INDEX}")
+
+
+def load_db():
+    """Load student ID → name mapping from disk."""
+    if not os.path.exists(ENCODINGS_FILE):
+        return {}
+    with open(ENCODINGS_FILE, 'rb') as f:
+        return pickle.load(f)
+
+
+def save_db(db):
+    """Save student ID → name mapping to disk."""
+    os.makedirs("data", exist_ok=True)
+    with open(ENCODINGS_FILE, 'wb') as f:
+        pickle.dump(db, f)
 
 
 def enroll_student(student_id, student_name):
     """
-    Capture face photos from webcam and save embedding for a student.
-
-    Args:
-        student_id   : unique ID e.g. "U24CS167"
-        student_name : full name e.g. "Maneesh Kumar"
+    Capture photos from webcam and enroll a new student.
+    Saves full frames — InsightFace works better on full frames.
+    Rebuilds FAISS index after enrollment.
     """
-    # Create folder for this student
     student_dir = os.path.join(STUDENTS_DIR, student_id)
     os.makedirs(student_dir, exist_ok=True)
     os.makedirs("data", exist_ok=True)
 
     print(f"\n[ENROLL] Enrolling: {student_name} ({student_id})")
-    print(f"[ENROLL] We will capture {PHOTOS_NEEDED} photos.")
-    print("[ENROLL] Look at the camera. Press SPACE to capture each photo.")
-    print("[ENROLL] Press Q to cancel.\n")
+    print(f"[INFO]   Capturing {PHOTOS_NEEDED} photos.")
+    print("[INFO]   TIPS for best ArcFace accuracy:")
+    print("         Photos 1-5  : look straight at camera")
+    print("         Photos 6-8  : turn slightly left")
+    print("         Photos 9-11 : turn slightly right")
+    print("         Photos 12-13: look up slightly")
+    print("         Photos 14-15: different expressions")
+    print("[INFO]   Press SPACE to capture | Q to cancel\n")
 
-    cap          = cv2.VideoCapture(0)
-    captured     = 0
-    embeddings   = []
+    # Load model before opening camera
+    app = get_face_app()
+    cap = cv2.VideoCapture(0)
+
+    if not cap.isOpened():
+        print("[ERROR] Cannot open camera.")
+        return
+
+    captured = 0
 
     while captured < PHOTOS_NEEDED:
         ret, frame = cap.read()
         if not ret:
+            print("[ERROR] Failed to read from camera.")
             break
 
         display = frame.copy()
-        gray    = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces   = FACE_CASCADE.detectMultiScale(
-                    gray, scaleFactor=1.1, minNeighbors=5, minSize=(80, 80))
 
-        face_found = False
+        # Detect faces using InsightFace RetinaFace
+        faces      = app.get(frame)
+        face_found = len(faces) > 0
 
-        for (x, y, w, h) in faces:
-            face_found = True
-            # Draw box around detected face
-            cv2.rectangle(display, (x, y), (x+w, y+h), (0, 255, 0), 2)
+        for face in faces:
+            x1, y1, x2, y2 = [int(v) for v in face.bbox]
+            # Clamp to frame boundaries
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(frame.shape[1], x2), min(frame.shape[0], y2)
+            cv2.rectangle(display, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(display,
+                        f"Photo {captured+1}/{PHOTOS_NEEDED}",
+                        (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-            # Show capture count inside box
-            cv2.putText(display, f"Photo {captured+1}/{PHOTOS_NEEDED}",
-                        (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6, (0, 255, 0), 2)
+        # Status overlay
+        if face_found:
+            msg   = "Face detected — Press SPACE to capture"
+            color = (0, 255, 0)
+        else:
+            msg   = "No face detected — adjust position"
+            color = (0, 0, 255)
 
-        # Instructions overlay
-        status = "Face detected - Press SPACE to capture" if face_found \
-                 else "No face found - adjust position"
-        color  = (0, 255, 0) if face_found else (0, 0, 255)
+        cv2.putText(display, msg,
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
+        cv2.putText(display,
+                    f"{student_name} ({student_id})",
+                    (10, 60), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6, (255, 255, 0), 2)
 
-        cv2.putText(display, status, (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-        cv2.putText(display, f"Student: {student_name} ({student_id})",
-                    (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-        cv2.putText(display, f"Captured: {captured}/{PHOTOS_NEEDED}",
-                    (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+        # Progress bar
+        progress = int((captured / PHOTOS_NEEDED) * 400)
+        cv2.rectangle(display, (10, 80), (410, 100), (50, 50, 50), -1)
+        cv2.rectangle(display, (10, 80),
+                      (10 + progress, 100), (0, 200, 0), -1)
+        cv2.putText(display, f"{captured}/{PHOTOS_NEEDED}",
+                    (415, 95), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55, (255, 255, 255), 1)
 
-        cv2.imshow("Face Enrollment", display)
+        cv2.imshow("Face Enrollment - ArcFace", display)
         key = cv2.waitKey(1) & 0xFF
 
         if key == ord('q'):
-            print("[ENROLL] Cancelled.")
+            print("[ENROLL] Cancelled by user.")
             break
 
-        if key == ord(' ') and face_found and len(faces) > 0:
-            # Capture the first detected face
-            x, y, w, h   = faces[0]
-            face_crop    = frame[y:y+h, x:x+w]
-
-            # Save photo to disk
+        if key == ord(' ') and face_found:
+            # Save full frame (not just crop)
             photo_path = os.path.join(student_dir, f"{captured+1}.jpg")
-            cv2.imwrite(photo_path, face_crop)
-
-            # Generate embedding for this photo
-            emb = get_face_embedding(face_crop)
-            embeddings.append(emb)
-
+            cv2.imwrite(photo_path, frame)
             captured += 1
-            print(f"  [✓] Photo {captured}/{PHOTOS_NEEDED} saved → {photo_path}")
+            print(f"  [✓] Photo {captured}/{PHOTOS_NEEDED} saved")
 
-            # Flash green screen as feedback
-            green = np.zeros_like(display)
-            green[:] = (0, 255, 0)
-            cv2.imshow("Face Enrollment", green)
-            cv2.waitKey(200)
+            # Green flash feedback
+            flash = np.zeros_like(display)
+            flash[:] = (0, 200, 0)
+            cv2.imshow("Face Enrollment - ArcFace", flash)
+            cv2.waitKey(150)
 
     cap.release()
     cv2.destroyAllWindows()
 
-    # ── Save mean embedding to encodings file ─────────────────────
-    if len(embeddings) >= 3:
-        mean_embedding = np.mean(embeddings, axis=0)
-
-        # Load existing encodings or start fresh
-        if os.path.exists(ENCODINGS_FILE):
-            with open(ENCODINGS_FILE, 'rb') as f:
-                db = pickle.load(f)
-        else:
-            db = {}
-
-        db[student_id] = {
-            "name"     : student_name,
-            "embedding": mean_embedding
-        }
-
-        with open(ENCODINGS_FILE, 'wb') as f:
-            pickle.dump(db, f)
-
+    if captured >= 5:
+        # Save student to DB
+        db = load_db()
+        db[student_id] = {"name": student_name}
+        save_db(db)
         print(f"\n[✓] Enrollment complete for {student_name}!")
-        print(f"[✓] {len(embeddings)} photos used to build face fingerprint.")
-        print(f"[✓] Saved to {ENCODINGS_FILE}")
+        print(f"    Photos saved: {captured}")
+
+        # Rebuild FAISS index with new student
+        build_faiss_index()
     else:
-        print("[✗] Not enough photos captured. Please try again.")
+        print("[✗] Not enough photos captured. "
+              "Need at least 5. Please try again.")
+
+
+def delete_student(student_id):
+    """Remove a student from DB + photos and rebuild index."""
+    db = load_db()
+    if student_id not in db:
+        print(f"[ERROR] Student ID '{student_id}' not found.")
+        return
+
+    name = db.pop(student_id)['name']
+    save_db(db)
+
+    # Delete their photos
+    import shutil
+    student_dir = os.path.join(STUDENTS_DIR, student_id)
+    if os.path.exists(student_dir):
+        shutil.rmtree(student_dir)
+
+    print(f"[✓] Deleted {name} ({student_id}) and all their photos.")
+
+    # Rebuild index without this student
+    build_faiss_index()
+
+
+def update_student(student_id, student_name):
+    """Delete old enrollment and re-enroll with fresh photos."""
+    import shutil
+
+    # Remove from DB
+    db = load_db()
+    db.pop(student_id, None)
+    save_db(db)
+
+    # Delete old photos
+    student_dir = os.path.join(STUDENTS_DIR, student_id)
+    if os.path.exists(student_dir):
+        shutil.rmtree(student_dir)
+
+    print(f"[INFO] Old data cleared. Starting fresh enrollment...")
+
+    # Fresh enrollment
+    enroll_student(student_id, student_name)
 
 
 def list_enrolled():
-    """Show all currently enrolled students."""
-    if not os.path.exists(ENCODINGS_FILE):
+    """Display all enrolled students with photo counts."""
+    db = load_db()
+    if not db:
         print("[INFO] No students enrolled yet.")
         return
 
-    with open(ENCODINGS_FILE, 'rb') as f:
-        db = pickle.load(f)
-
-    print(f"\n[INFO] Enrolled Students ({len(db)} total):")
-    print("-" * 40)
+    faiss_exists = os.path.exists(FAISS_INDEX)
+    print(f"\n{'─'*55}")
+    print(f"  Enrolled Students ({len(db)} total)")
+    print(f"  FAISS Index: {'✓ Built' if faiss_exists else '✗ Not built'}")
+    print(f"{'─'*55}")
     for sid, info in db.items():
-        print(f"  ID: {sid}  |  Name: {info['name']}")
-    print("-" * 40)
+        student_dir = os.path.join(STUDENTS_DIR, sid)
+        photos = len([f for f in os.listdir(student_dir)
+                      if f.endswith('.jpg')]) \
+                 if os.path.exists(student_dir) else 0
+        print(f"  {sid:15s}  {info['name']:25s}  {photos} photos")
+    print(f"{'─'*55}")
 
 
-# ── ENROLLMENT MENU ───────────────────────────────────────────────
+# ── MAIN MENU ─────────────────────────────────────────────────────
 if __name__ == "__main__":
-    print("=" * 50)
-    print("   SMART ATTENDANCE — Face Enrollment Module")
-    print("=" * 50)
+    print("=" * 55)
+    print("   SMART ATTENDANCE — ArcFace Enrollment Module")
+    print("   Model: InsightFace buffalo_sc (CPU optimized)")
+    print("=" * 55)
 
     while True:
         print("\n[1] Enroll new student")
         print("[2] List enrolled students")
-        print("[3] Exit")
-        choice = input("\nEnter choice (1/2/3): ").strip()
+        print("[3] Update / re-enroll student")
+        print("[4] Delete student")
+        print("[5] Rebuild FAISS index")
+        print("[6] Exit")
+
+        choice = input("\nEnter choice: ").strip()
 
         if choice == "1":
-            sid  = input("Enter Student ID (e.g. U24CS167): ").strip()
-            name = input("Enter Student Name: ").strip()
+            sid  = input("Student ID   : ").strip()
+            name = input("Student Name : ").strip()
             enroll_student(sid, name)
 
         elif choice == "2":
             list_enrolled()
 
         elif choice == "3":
+            list_enrolled()
+            sid  = input("Student ID to update : ").strip()
+            name = input("Student Name         : ").strip()
+            update_student(sid, name)
+
+        elif choice == "4":
+            list_enrolled()
+            sid = input("Student ID to delete : ").strip()
+            delete_student(sid)
+
+        elif choice == "5":
+            build_faiss_index()
+
+        elif choice == "6":
             print("Goodbye!")
             break
+
         else:
-            print("Invalid choice. Try again.")
+            print("Invalid choice. Please enter 1-6.")
