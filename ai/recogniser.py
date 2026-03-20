@@ -21,8 +21,8 @@ LABELS_FILE = "data/labels.pkl"
 
 # ── Thresholds ────────────────────────────────────────────────────
 SIMILARITY_THRESHOLD = 0.68   # ArcFace match threshold
-EAR_THRESHOLD        = 0.22   # Eye closed if EAR below this
-CONSEC_FRAMES        = 2      # Frames eye must be closed = 1 blink
+EAR_THRESHOLD        = 0.28 # Eye closed if EAR below this
+CONSEC_FRAMES        = 2    # Frames eye must be closed = 1 blink
 BLINKS_NEEDED        = 2      # Blinks required to pass liveness
 CONFIRM_FRAMES       = 5      # Consecutive detections before marking
 
