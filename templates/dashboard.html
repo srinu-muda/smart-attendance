@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Smart AI Attendance System</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"/>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --navy:   #1F3A8A;
+      --blue:   #2E75B6;
+      --teal:   #1ABC9C;
+      --orange: #E8761B;
+      --light:  #EBF2FA;
+    }
+    body { background: #F0F4F8; font-family: 'Segoe UI', sans-serif; }
+
+    /* ── Navbar ── */
+    .navbar { background: var(--navy); padding: 12px 24px; }
+    .navbar-brand {
+      color: #fff !important; font-weight: 700;
+      font-size: 1.2rem; letter-spacing: 0.5px;
+    }
+    .nav-time { color: #90CAF9; font-size: 0.85rem; }
+
+    /* ── Stat cards ── */
+    .stat-card {
+      background: #fff; border-radius: 12px;
+      padding: 20px 24px; border-left: 5px solid var(--navy);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+    }
+    .stat-card .value {
+      font-size: 2.2rem; font-weight: 700; color: var(--navy);
+    }
+    .stat-card .label {
+      font-size: 0.82rem; color: #777; text-transform: uppercase;
+      letter-spacing: 0.8px;
+    }
+    .stat-card.green  { border-left-color: #1ABC9C; }
+    .stat-card.orange { border-left-color: var(--orange); }
+    .stat-card.red    { border-left-color: #E74C3C; }
+
+    /* ── Session panel ── */
+    .session-panel {
+      background: #fff; border-radius: 12px; padding: 20px 24px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+    }
+    .badge-active {
+      background: #D4EDDA; color: #155724;
+      padding: 4px 12px; border-radius: 20px; font-size: 0.78rem;
+      font-weight: 600;
+    }
+    .badge-inactive {
+      background: #F8D7DA; color: #721C24;
+      padding: 4px 12px; border-radius: 20px; font-size: 0.78rem;
+      font-weight: 600;
+    }
+
+    /* ── Attendance table ── */
+    .table-card {
+      background: #fff; border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07); overflow: hidden;
+    }
+    .table-card .card-header {
+      background: var(--navy); color: #fff;
+      padding: 14px 20px; font-weight: 600;
+    }
+    .table thead th {
+      background: var(--light); color: var(--navy);
+      font-size: 0.8rem; text-transform: uppercase;
+      letter-spacing: 0.6px; border: none;
+    }
+    .table tbody tr { transition: background 0.2s; }
+    .table tbody tr:hover { background: #F8FBFF; }
+    .badge-present {
+      background: #D4EDDA; color: #155724;
+      padding: 3px 10px; border-radius: 12px;
+      font-size: 0.75rem; font-weight: 600;
+    }
+    .badge-absent {
+      background: #F8D7DA; color: #721C24;
+      padding: 3px 10px; border-radius: 12px;
+      font-size: 0.75rem; font-weight: 600;
+    }
+    .conf-bar {
+      height: 6px; border-radius: 3px;
+      background: #E9ECEF; overflow: hidden;
+    }
+    .conf-fill {
+      height: 100%; border-radius: 3px;
+      background: linear-gradient(90deg, #1ABC9C, #2E75B6);
+      transition: width 0.5s;
+    }
+
+    /* ── Alerts ── */
+    .alert-panel {
+      background: #fff; border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+      max-height: 260px; overflow-y: auto;
+    }
+    .alert-panel .card-header {
+      background: var(--orange); color: #fff;
+      padding: 12px 20px; font-weight: 600;
+      position: sticky; top: 0;
+    }
+    .alert-item {
+      padding: 8px 16px; border-bottom: 1px solid #F0F0F0;
+      font-size: 0.83rem; display: flex;
+      align-items: center; gap: 8px;
+    }
+    .alert-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    /* ── Buttons ── */
+    .btn-start {
+      background: var(--teal); border: none; color: #fff;
+      padding: 8px 20px; border-radius: 8px; font-weight: 600;
+    }
+    .btn-start:hover { background: #17A589; color: #fff; }
+    .btn-stop {
+      background: #E74C3C; border: none; color: #fff;
+      padding: 8px 20px; border-radius: 8px; font-weight: 600;
+    }
+    .btn-stop:hover  { background: #C0392B; color: #fff; }
+    .btn-export {
+      background: var(--navy); border: none; color: #fff;
+      padding: 8px 20px; border-radius: 8px; font-weight: 600;
+    }
+    .btn-export:hover { background: var(--blue); color: #fff; }
+
+    /* ── Live indicator ── */
+    .live-dot {
+      display: inline-block; width: 10px; height: 10px;
+      background: #1ABC9C; border-radius: 50%;
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0%,100% { opacity: 1; transform: scale(1); }
+      50%      { opacity: 0.5; transform: scale(1.3); }
+    }
+
+    /* ── Chart ── */
+    .chart-card {
+      background: #fff; border-radius: 12px; padding: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Navbar ─────────────────────────────────────────────────── -->
+<nav class="navbar navbar-expand-lg">
+  <span class="navbar-brand">
+    🎓 Smart AI Attendance System
+  </span>
+  <div class="ms-auto d-flex align-items-center gap-3">
+    <span class="live-dot"></span>
+    <span class="nav-time" id="clock">--:--:--</span>
+    <span class="nav-time">SVNIT Surat</span>
+  </div>
+</nav>
+
+<div class="container-fluid px-4 py-3">
+
+  <!-- ── Row 1: Stat Cards ──────────────────────────────────── -->
+  <div class="row g-3 mb-3">
+    <div class="col-md-3">
+      <div class="stat-card">
+        <div class="value" id="stat-total">—</div>
+        <div class="label">Total Students</div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="stat-card green">
+        <div class="value" id="stat-present">—</div>
+        <div class="label">Present</div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="stat-card red">
+        <div class="value" id="stat-absent">—</div>
+        <div class="label">Absent</div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="stat-card orange">
+        <div class="value" id="stat-percent">—</div>
+        <div class="label">Attendance %</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Row 2: Session Panel + Chart ──────────────────────── -->
+  <div class="row g-3 mb-3">
+
+    <!-- Session control -->
+    <div class="col-md-6">
+      <div class="session-panel h-100">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <h6 class="mb-0 fw-bold" style="color:var(--navy)">
+            Session Control
+          </h6>
+          <span id="session-badge" class="badge-inactive">
+            No Active Session
+          </span>
+        </div>
+
+        <!-- Start form -->
+        <div id="start-form">
+          <div class="row g-2 mb-2">
+            <div class="col-6">
+              <input type="text" id="subject-code"
+                     class="form-control form-control-sm"
+                     placeholder="Subject Code (e.g. CS501)"/>
+            </div>
+            <div class="col-6">
+              <input type="text" id="subject-name"
+                     class="form-control form-control-sm"
+                     placeholder="Subject Name"/>
+            </div>
+          </div>
+          <div class="mb-3">
+            <input type="text" id="faculty-name"
+                   class="form-control form-control-sm"
+                   placeholder="Faculty Name"/>
+          </div>
+          <button class="btn-start" onclick="startSession()">
+            ▶ Start Session
+          </button>
+        </div>
+
+        <!-- Active session info -->
+        <div id="active-info" style="display:none">
+          <table class="table table-sm table-borderless mb-3">
+            <tr>
+              <td class="text-muted" style="width:130px">Subject</td>
+              <td><strong id="info-subject">—</strong></td>
+            </tr>
+            <tr>
+              <td class="text-muted">Faculty</td>
+              <td id="info-faculty">—</td>
+            </tr>
+            <tr>
+              <td class="text-muted">Started</td>
+              <td id="info-start">—</td>
+            </tr>
+            <tr>
+              <td class="text-muted">Session ID</td>
+              <td id="info-id">—</td>
+            </tr>
+          </table>
+          <div class="d-flex gap-2">
+            <button class="btn-stop" onclick="stopSession()">
+              ■ Stop Session
+            </button>
+            <button class="btn-export"
+                    onclick="exportExcel()">
+              ⬇ Export Excel
+            </button>
+            <button class="btn-export"
+                    style="background:var(--blue)"
+                    onclick="exportCSV()">
+              ⬇ Export CSV
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Donut chart -->
+    <div class="col-md-3">
+      <div class="chart-card h-100 d-flex flex-column
+                  align-items-center justify-content-center">
+        <h6 class="fw-bold mb-3" style="color:var(--navy)">
+          Attendance Ratio
+        </h6>
+        <canvas id="donut-chart" width="180" height="180"></canvas>
+      </div>
+    </div>
+
+    <!-- Alerts -->
+    <div class="col-md-3">
+      <div class="alert-panel h-100">
+        <div class="card-header">
+          🔔 Alerts &amp; Events
+        </div>
+        <div id="alerts-list">
+          <div class="alert-item text-muted">
+            No alerts yet...
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Row 3: Attendance Table ───────────────────────────── -->
+  <div class="table-card">
+    <div class="card-header d-flex justify-content-between
+                align-items-center">
+      <span>📋 Live Attendance</span>
+      <small id="last-updated" class="opacity-75">
+        Waiting for session...
+      </small>
+    </div>
+    <div class="p-3">
+      <table class="table table-hover align-middle mb-0">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Student ID</th>
+            <th>Name</th>
+            <th>Status</th>
+            <th>Time In</th>
+            <th>Confidence</th>
+          </tr>
+        </thead>
+        <tbody id="attendance-table">
+          <tr>
+            <td colspan="6" class="text-center text-muted py-4">
+              Start a session to see live attendance
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div><!-- /container -->
+
+<script>
+// ── State ───────────────────────────────────────────────────────
+let activeSessionId = null;
+let donutChart      = null;
+let alertCount      = 0;
+const prevMarked    = new Set();
+
+// ── Clock ───────────────────────────────────────────────────────
+function updateClock() {
+  document.getElementById("clock").textContent =
+    new Date().toLocaleTimeString();
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+// ── Init donut chart ────────────────────────────────────────────
+function initChart() {
+  const ctx = document.getElementById("donut-chart").getContext("2d");
+  donutChart = new Chart(ctx, {
+    type: "doughnut",
+    data: {
+      labels: ["Present", "Absent"],
+      datasets: [{
+        data: [0, 1],
+        backgroundColor: ["#1ABC9C", "#E74C3C"],
+        borderWidth: 0,
+        hoverOffset: 4
+      }]
+    },
+    options: {
+      responsive: false,
+      cutout: "72%",
+      plugins: { legend: { display: false } }
+    }
+  });
+}
+initChart();
+
+// ── Add alert ───────────────────────────────────────────────────
+function addAlert(msg, type = "info") {
+  const colors = {
+    success: "#1ABC9C",
+    warning: "#E8761B",
+    danger : "#E74C3C",
+    info   : "#2E75B6"
+  };
+  const list = document.getElementById("alerts-list");
+  if (alertCount === 0) list.innerHTML = "";
+  alertCount++;
+
+  const div = document.createElement("div");
+  div.className = "alert-item";
+  div.innerHTML = `
+    <span class="alert-dot"
+          style="background:${colors[type]}"></span>
+    <span>${new Date().toLocaleTimeString()} — ${msg}</span>`;
+  list.prepend(div);
+}
+
+// ── Start session ───────────────────────────────────────────────
+async function startSession() {
+  const code = document.getElementById("subject-code").value.trim();
+  const name = document.getElementById("subject-name").value.trim();
+  const fac  = document.getElementById("faculty-name").value.trim();
+
+  if (!code) {
+    alert("Please enter a Subject Code.");
+    return;
+  }
+
+  const res = await fetch("/api/session/start", {
+    method : "POST",
+    headers: { "Content-Type": "application/json" },
+    body   : JSON.stringify({
+      subject_code: code,
+      subject_name: name,
+      faculty_name: fac
+    })
+  });
+  const data = await res.json();
+
+  if (data.status === "ok") {
+    activeSessionId = data.session.id;
+    showActiveSession(data.session);
+    addAlert(`Session started: ${code}`, "success");
+    refreshAttendance();
+  } else {
+    alert("Error: " + data.msg);
+  }
+}
+
+// ── Stop session ────────────────────────────────────────────────
+async function stopSession() {
+  if (!confirm("Stop the current session?")) return;
+
+  const res  = await fetch("/api/session/stop", {
+    method: "POST"
+  });
+  const data = await res.json();
+
+  if (data.status === "ok") {
+    addAlert(
+      `Session stopped. Present: ` +
+      `${data.summary.total_present}/` +
+      `${data.summary.total_students}`,
+      "warning"
+    );
+    activeSessionId = null;
+    showNoSession();
+  }
+}
+
+// ── Show active session UI ───────────────────────────────────────
+function showActiveSession(session) {
+  document.getElementById("start-form").style.display  = "none";
+  document.getElementById("active-info").style.display = "block";
+  document.getElementById("session-badge").className   =
+    "badge-active";
+  document.getElementById("session-badge").textContent =
+    "● Session Active";
+  document.getElementById("info-subject").textContent  =
+    `${session.subject_code} — ${session.subject_name}`;
+  document.getElementById("info-faculty").textContent  =
+    session.faculty_name || "—";
+  document.getElementById("info-start").textContent    =
+    session.start_time;
+  document.getElementById("info-id").textContent       =
+    `#${session.id}`;
+}
+
+// ── Show no session UI ──────────────────────────────────────────
+function showNoSession() {
+  document.getElementById("start-form").style.display  = "block";
+  document.getElementById("active-info").style.display = "none";
+  document.getElementById("session-badge").className   =
+    "badge-inactive";
+  document.getElementById("session-badge").textContent =
+    "No Active Session";
+  document.getElementById("attendance-table").innerHTML = `
+    <tr>
+      <td colspan="6" class="text-center text-muted py-4">
+        No active session
+      </td>
+    </tr>`;
+}
+
+// ── Refresh attendance table ────────────────────────────────────
+async function refreshAttendance() {
+  const res  = await fetch("/api/attendance/live");
+  const data = await res.json();
+
+  if (data.status === "none" || data.status === "error") return;
+
+  const total   = data.total;
+  const present = data.total_present;
+  const absent  = data.total_absent;
+  const pct     = total > 0
+                  ? Math.round(present / total * 100)
+                  : 0;
+
+  // Update stat cards
+  document.getElementById("stat-total").textContent   = total;
+  document.getElementById("stat-present").textContent = present;
+  document.getElementById("stat-absent").textContent  = absent;
+  document.getElementById("stat-percent").textContent = pct + "%";
+
+  // Update donut chart
+  donutChart.data.datasets[0].data = [present, absent || 1];
+  donutChart.update();
+
+  // Alert for newly marked students
+  data.present.forEach(s => {
+    if (!prevMarked.has(s.student_id)) {
+      prevMarked.add(s.student_id);
+      addAlert(`${s.name} marked PRESENT`, "success");
+    }
+  });
+
+  // Update last-updated time
+  document.getElementById("last-updated").textContent =
+    "Updated: " + new Date().toLocaleTimeString();
+
+  // Rebuild table
+  const all  = [...data.present, ...data.absent];
+  const tbody = document.getElementById("attendance-table");
+
+  if (all.length === 0) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="6" class="text-center text-muted py-4">
+          No students found
+        </td>
+      </tr>`;
+    return;
+  }
+
+  tbody.innerHTML = all.map((s, i) => {
+    const isPresent = s.status === "PRESENT";
+    const confPct   = Math.round(s.confidence * 100);
+    const badge     = isPresent
+      ? `<span class="badge-present">PRESENT</span>`
+      : `<span class="badge-absent">ABSENT</span>`;
+    const bar = isPresent ? `
+      <div class="conf-bar mt-1" style="width:80px">
+        <div class="conf-fill" style="width:${confPct}%"></div>
+      </div>
+      <small class="text-muted">${confPct}%</small>` : `—`;
+
+    return `
+      <tr>
+        <td class="text-muted">${i+1}</td>
+        <td><code>${s.student_id}</code></td>
+        <td><strong>${s.name}</strong></td>
+        <td>${badge}</td>
+        <td>${s.time}</td>
+        <td>${bar}</td>
+      </tr>`;
+  }).join("");
+}
+
+// ── Export buttons ──────────────────────────────────────────────
+function exportExcel() {
+  if (!activeSessionId) {
+    alert("No active session.");
+    return;
+  }
+  window.location.href =
+    `/api/report/${activeSessionId}/excel`;
+  addAlert("Excel report downloaded", "info");
+}
+
+function exportCSV() {
+  if (!activeSessionId) {
+    alert("No active session.");
+    return;
+  }
+  window.location.href =
+    `/api/report/${activeSessionId}/csv`;
+  addAlert("CSV report downloaded", "info");
+}
+
+// ── Auto-refresh every 3 seconds ───────────────────────────────
+setInterval(async () => {
+  // Check if session is active
+  const res  = await fetch("/api/session/active");
+  const data = await res.json();
+
+  if (data.status === "ok" && !activeSessionId) {
+    activeSessionId = data.session.id;
+    showActiveSession(data.session);
+    addAlert("Session detected: " +
+             data.session.subject_code, "info");
+  }
+
+  if (activeSessionId) {
+    refreshAttendance();
+  }
+}, 3000);
+
+// ── Initial load ─────────────────────────────────────────────────
+(async () => {
+  const res  = await fetch("/api/session/active");
+  const data = await res.json();
+  if (data.status === "ok") {
+    activeSessionId = data.session.id;
+    showActiveSession(data.session);
+    refreshAttendance();
+    addAlert("Resumed active session: " +
+             data.session.subject_code, "info");
+  }
+})();
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+
+<!-- 
+```
+
+---
+
+## ▶️ Run and Open Dashboard
+
+Make sure Flask is running:
+```
+python run.py
+```
+
+Open in browser:
+```
+http://localhost:5000
+```
+
+**What you'll see:**
+- 📊 Stat cards — total/present/absent/percentage
+- 🎯 Session control — start/stop with subject details
+- 🍩 Donut chart — live present vs absent ratio
+- 📋 Attendance table — updates every 3 seconds
+- 🔔 Alerts panel — logs every mark event
+- ⬇️ Export Excel/CSV buttons
+
+**Full workflow to test:**
+1. Open `http://localhost:5000`
+2. Enter Subject Code + Name → click **Start Session**
+3. Run pipeline in second terminal: `python -m ai.pipeline`
+4. Watch table update live as students are marked ✅
+
+---
+
+## 📤 Push to GitHub
+```
+git add templates/dashboard.html
+git commit -m "Module 9: Web dashboard - live attendance, charts, export buttons"
+git push -->
